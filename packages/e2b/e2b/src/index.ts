@@ -43,6 +43,22 @@ export function e2bControlEnvs(
 export interface Config {
   /** API key; omission reads `E2B_API_KEY`. It is never forwarded into the sandbox. */
   apiKey?: string
+  /**
+   * Self-hosted API entry (e.g. `https://api.example.internal`); omission reads
+   * `E2B_API_URL`. Required: never defaults to the E2B cloud.
+   */
+  apiUrl?: string
+  /**
+   * Sandbox wildcard domain (e.g. `example.internal`); omission reads
+   * `E2B_DOMAIN`. Required: without it the SDK routes envd traffic to
+   * `e2b.app` and reports sandbox-not-found for live sandboxes.
+   */
+  domain?: string
+  /**
+   * Template **ID** (never an alias — aliases are rejected by the self-hosted
+   * API); omission reads `E2B_TEMPLATE`. Required.
+   */
+  template?: string
   /** Shared remote working directory, created before adapters receive the sandbox. */
   cwd?: string
   /** E2B sandbox lifetime in milliseconds; expiry always deletes the sandbox. */
@@ -51,6 +67,9 @@ export interface Config {
 
 interface ResolvedConfig {
   apiKey: string
+  apiUrl: string
+  domain: string
+  template: string
   cwd: string
   timeoutMs: number
 }
@@ -74,6 +93,9 @@ declare module '@deepseek-ai/cordis' {
 export class E2BRuntime extends Service {
   static Config: z<Config> = z.object({
     apiKey: z.string(),
+    apiUrl: z.string(),
+    domain: z.string(),
+    template: z.string(),
     cwd: z.string().default('/home/user/workspace'),
     timeoutMs: z.number().default(300_000),
   })
@@ -91,9 +113,11 @@ export class E2BRuntime extends Service {
     super(ctx, 'e2b')
     // Schemastery fills these fields before construction; the type does not encode that step.
     const resolved = config as SchemaResolvedConfig
-    const apiKey = config.apiKey ?? process.env.E2B_API_KEY
     this.config = {
-      apiKey: apiKey ?? '',
+      apiKey: config.apiKey ?? process.env.E2B_API_KEY ?? '',
+      apiUrl: config.apiUrl ?? process.env.E2B_API_URL ?? '',
+      domain: config.domain ?? process.env.E2B_DOMAIN ?? '',
+      template: config.template ?? process.env.E2B_TEMPLATE ?? '',
       cwd: resolved.cwd,
       timeoutMs: resolved.timeoutMs,
     }
@@ -140,6 +164,17 @@ export class E2BRuntime extends Service {
     if (this.config.apiKey.length === 0) {
       throw new Error('dsh-e2b: configure apiKey or set E2B_API_KEY')
     }
+    // Fail closed: an empty self-hosted endpoint must never fall through to the
+    // E2B cloud defaults baked into the SDK.
+    if (this.config.apiUrl.length === 0) {
+      throw new Error('dsh-e2b: configure apiUrl or set E2B_API_URL (the cloud default does not apply to a self-hosted cluster)')
+    }
+    if (this.config.domain.length === 0) {
+      throw new Error('dsh-e2b: configure domain or set E2B_DOMAIN (without it envd traffic routes to e2b.app and live sandboxes look missing)')
+    }
+    if (this.config.template.length === 0) {
+      throw new Error('dsh-e2b: configure template (a template ID, not an alias) or set E2B_TEMPLATE')
+    }
     if (!posix.isAbsolute(this.config.cwd)) {
       throw new Error(`dsh-e2b: cwd must be an absolute Linux path: ${this.config.cwd}`)
     }
@@ -149,8 +184,10 @@ export class E2BRuntime extends Service {
   }
 
   private async open(): Promise<Sandbox> {
-    const sandbox = await Sandbox.create({
+    const sandbox = await Sandbox.create(this.config.template, {
       apiKey: this.config.apiKey,
+      apiUrl: this.config.apiUrl,
+      domain: this.config.domain,
       timeoutMs: this.config.timeoutMs,
       secure: true,
       lifecycle: { onTimeout: 'kill' },

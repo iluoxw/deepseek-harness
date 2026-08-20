@@ -54,6 +54,14 @@ function fakeSandbox(id = 'sandbox-1'): SandboxFixture {
   return { sandbox, makeDir, getInfo, run, kill }
 }
 
+/** Minimal valid self-hosted connection block shared by the lifecycle tests. */
+const SELFHOST = {
+  apiKey: 'test-key',
+  apiUrl: 'https://api.example.internal',
+  domain: 'example.internal',
+  template: 'tmpl-1234567890',
+}
+
 beforeEach(() => {
   sdk.create.mockReset()
   vi.unstubAllEnvs()
@@ -73,14 +81,16 @@ describe('E2BRuntime', () => {
     const fixture = fakeSandbox()
     sdk.create.mockResolvedValue(fixture.sandbox)
     const ctx = new Context()
-    const fiber = await ctx.plugin(E2BRuntime, { apiKey: 'test-key' })
+    const fiber = await ctx.plugin(E2BRuntime, { ...SELFHOST })
 
     const service = ctx.e2b
     await expect(service.getSandbox()).resolves.toBe(fixture.sandbox)
     expect(service.cwd).toBe('/home/user/workspace')
     expect(service.runtimeRoot).toBe('/home/user/workspace/.dsh-e2b')
-    expect(sdk.create).toHaveBeenCalledWith({
-      apiKey: 'test-key',
+    expect(sdk.create).toHaveBeenCalledWith(SELFHOST.template, {
+      apiKey: SELFHOST.apiKey,
+      apiUrl: SELFHOST.apiUrl,
+      domain: SELFHOST.domain,
       timeoutMs: 300_000,
       secure: true,
       lifecycle: { onTimeout: 'kill' },
@@ -105,7 +115,7 @@ describe('E2BRuntime', () => {
     const opening = Promise.withResolvers<SandboxType>()
     sdk.create.mockReturnValue(opening.promise)
     const ctx = new Context()
-    const fiber = await ctx.plugin(E2BRuntime, { apiKey: 'test-key' })
+    const fiber = await ctx.plugin(E2BRuntime, { ...SELFHOST })
 
     const acquisition = ctx.e2b.getSandbox()
     const disposing = fiber.dispose()
@@ -116,8 +126,11 @@ describe('E2BRuntime', () => {
     expect(fixture.kill).toHaveBeenCalledOnce()
   })
 
-  it('reads the key from the environment and honors the configured cwd and lifetime', async () => {
+  it('reads the whole connection block from the environment and honors the configured cwd and lifetime', async () => {
     vi.stubEnv('E2B_API_KEY', 'environment-key')
+    vi.stubEnv('E2B_API_URL', 'https://api.env.example')
+    vi.stubEnv('E2B_DOMAIN', 'env.example')
+    vi.stubEnv('E2B_TEMPLATE', 'env-template-id')
     const fixture = fakeSandbox('configured-sandbox')
     sdk.create.mockResolvedValue(fixture.sandbox)
     const ctx = new Context()
@@ -127,8 +140,10 @@ describe('E2BRuntime', () => {
     })
     await ctx.e2b.getSandbox()
 
-    expect(sdk.create).toHaveBeenCalledWith({
+    expect(sdk.create).toHaveBeenCalledWith('env-template-id', {
       apiKey: 'environment-key',
+      apiUrl: 'https://api.env.example',
+      domain: 'env.example',
       timeoutMs: 60_000,
       secure: true,
       lifecycle: { onTimeout: 'kill' },
@@ -145,7 +160,7 @@ describe('E2BRuntime', () => {
     const ctx = new Context()
     const errors: unknown[] = []
     ctx.logger.error = ((error: unknown) => { errors.push(error) }) as typeof ctx.logger.error
-    const fiber = await ctx.plugin(E2BRuntime, { apiKey: 'test-key' })
+    const fiber = await ctx.plugin(E2BRuntime, { ...SELFHOST })
     await ctx.e2b.getSandbox()
 
     await fiber.dispose()
@@ -161,7 +176,7 @@ describe('E2BRuntime', () => {
     const ctx = new Context()
     const errors: unknown[] = []
     ctx.logger.error = ((error: unknown) => { errors.push(error) }) as typeof ctx.logger.error
-    const fiber = await ctx.plugin(E2BRuntime, { apiKey: 'test-key' })
+    const fiber = await ctx.plugin(E2BRuntime, { ...SELFHOST })
     await ctx.e2b.getSandbox()
     await expect(fiber.dispose()).resolves.toBeUndefined()
     expect(fixture.kill).toHaveBeenCalledOnce()
@@ -173,7 +188,7 @@ describe('E2BRuntime', () => {
     fixture.makeDir.mockRejectedValueOnce(new Error('setup failed'))
     sdk.create.mockResolvedValue(fixture.sandbox)
     const ctx = new Context()
-    const fiber = await ctx.plugin(E2BRuntime, { apiKey: 'test-key' })
+    const fiber = await ctx.plugin(E2BRuntime, { ...SELFHOST })
 
     await expect(ctx.e2b.getSandbox()).rejects.toThrow('setup failed')
     expect(fixture.kill).toHaveBeenCalledOnce()
@@ -186,7 +201,7 @@ describe('E2BRuntime', () => {
     fixture.kill.mockRejectedValueOnce(new Error('cleanup failed'))
     sdk.create.mockResolvedValue(fixture.sandbox)
     const ctx = new Context()
-    const fiber = await ctx.plugin(E2BRuntime, { apiKey: 'test-key' })
+    const fiber = await ctx.plugin(E2BRuntime, { ...SELFHOST })
     await expect(ctx.e2b.getSandbox()).rejects.toThrow('chmod failed')
     expect(fixture.kill).toHaveBeenCalledOnce()
 
@@ -202,7 +217,7 @@ describe('E2BRuntime', () => {
     fixture.getInfo.mockResolvedValueOnce(info)
     sdk.create.mockResolvedValue(fixture.sandbox)
     const ctx = new Context()
-    await ctx.plugin(E2BRuntime, { apiKey: 'test-key' })
+    await ctx.plugin(E2BRuntime, { ...SELFHOST })
 
     await expect(ctx.e2b.getSandbox()).rejects.toThrow('runtime root must be a real directory')
     expect(fixture.run).not.toHaveBeenCalled()
@@ -210,11 +225,17 @@ describe('E2BRuntime', () => {
   })
 
   it.each([
-    [{ apiKey: '' }, /configure apiKey/],
-    [{ apiKey: 'x', cwd: 'relative' }, /absolute Linux path/],
-    [{ apiKey: 'x', timeoutMs: 0 }, /positive finite/],
-  ] as const)('fails self-contained configuration before opening E2B: %j', async (config, message) => {
+    ['apiKey', { ...SELFHOST, apiKey: '' }, /configure apiKey/],
+    ['apiUrl', { ...SELFHOST, apiUrl: '' }, /E2B_API_URL/],
+    ['domain', { ...SELFHOST, domain: '' }, /E2B_DOMAIN/],
+    ['template', { ...SELFHOST, template: '' }, /E2B_TEMPLATE/],
+    ['cwd', { ...SELFHOST, cwd: 'relative' }, /absolute Linux path/],
+    ['timeoutMs', { ...SELFHOST, timeoutMs: 0 }, /positive finite/],
+  ] as const)('fails self-contained configuration before opening E2B when %s is missing: %j', async (_label, config, message) => {
     vi.stubEnv('E2B_API_KEY', '')
+    vi.stubEnv('E2B_API_URL', '')
+    vi.stubEnv('E2B_DOMAIN', '')
+    vi.stubEnv('E2B_TEMPLATE', '')
     const ctx = new Context()
     await expect(ctx.plugin(E2BRuntime, config)).rejects.toThrow(message)
     expect(sdk.create).not.toHaveBeenCalled()

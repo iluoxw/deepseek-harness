@@ -525,26 +525,32 @@ describe('E2BSubprocessHandle', () => {
   })
 
   it('bounds descendant-held output draining and withholds the incomplete spill', async () => {
-    const fake = new FakeSandbox()
-    const handle = testHandle(runtime(fake), spec({ graceMs: 5 }), '/runtime/drain-bound')
-    await flush()
-    await fake.stdout('leader-output')
-    fake.exitStatus = '0\n'
+    vi.stubEnv('E2B_OUTPUT_DRAIN_BUDGET_MS', '5')
+    try {
+      const fake = new FakeSandbox()
+      const handle = testHandle(runtime(fake), spec({ graceMs: 5 }), '/runtime/drain-bound')
+      await flush()
+      await fake.stdout('leader-output')
+      fake.exitStatus = '0\n'
 
-    await expect(handle.done).resolves.toEqual({ exitCode: 0, signal: null })
-    expect(fake.handle.disconnects).toBe(1)
-    expect(handle.collected.stdout?.readFrom(0)).toEqual({
-      text: 'tput',
-      nextOffset: 13,
-      lossy: true,
-    })
-    expect(fake.removed).toContain('/runtime/drain-bound/stdout.log')
+      await expect(handle.done).resolves.toEqual({ exitCode: 0, signal: null })
+      expect(fake.handle.disconnects).toBe(1)
+      expect(handle.collected.stdout?.readFrom(0)).toEqual({
+        text: 'tput',
+        nextOffset: 13,
+        lossy: true,
+      })
+      expect(fake.removed).toContain('/runtime/drain-bound/stdout.log')
 
-    handle.terminate()
-    await expect(handle.waitForExit()).resolves.toBe(true)
+      handle.terminate()
+      await expect(handle.waitForExit()).resolves.toBe(true)
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('releases an inherited-output callback blocked on host backpressure at drain expiry', async () => {
+    vi.stubEnv('E2B_OUTPUT_DRAIN_BUDGET_MS', '5')
     const fake = new FakeSandbox()
     const written: string[] = []
     const stdoutWrite = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: Uint8Array) => {
@@ -573,6 +579,7 @@ describe('E2BSubprocessHandle', () => {
       await expect(handle.waitForExit()).resolves.toBe(true)
     } finally {
       stdoutWrite.mockRestore()
+      vi.unstubAllEnvs()
     }
   })
 

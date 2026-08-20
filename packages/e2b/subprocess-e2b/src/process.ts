@@ -90,6 +90,24 @@ function withinMs(settlement: Promise<CommandSettlement>, timeoutMs: number): Pr
   })
 }
 
+/**
+ * Floor on the post-exit output-drain window for natural completions.
+ * Self-hosted envd deployments deliver the output frames and the
+ * command-completion event measurably after the wrapper published its exit
+ * status (observed ~0.6–0.9s on e2b-infra envd 0.6.x versus a 250–500ms
+ * grace); disconnecting at the grace drops those still-queued encoder frames
+ * and silently loses output. A descendant legitimately holding the pipe
+ * never sends its encoder EOF, so it still expires at this bounded floor.
+ * Override with E2B_OUTPUT_DRAIN_BUDGET_MS for slower clusters.
+ */
+const DEFAULT_OUTPUT_DRAIN_BUDGET_MS = 3_000
+
+function naturalDrainBudgetMs(graceMs: number): number {
+  const configured = Number(process.env.E2B_OUTPUT_DRAIN_BUDGET_MS ?? Number.NaN)
+  const floor = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_OUTPUT_DRAIN_BUDGET_MS
+  return Math.max(graceMs, floor)
+}
+
 function commandText(spec: SubprocessSpawnSpec, paths: RemotePaths): string {
   const encoder = `"$dsh_e2b_env_bin" -i "$dsh_e2b_node" -e ${quoteE2BShellArg(OUTPUT_ENCODER_SOURCE)}`
   const stdoutRedirect = hasSpill(spec.stdio.stdout)
@@ -527,7 +545,13 @@ export class E2BSubprocessHandle implements SubprocessHandle {
           throw new Error(`subprocess-e2b: remote wrapper published invalid exit code ${JSON.stringify(rawStatus)}`)
         }
         if (completed !== undefined) return this.commandOutcome(completed, exitCode)
-        const drained = await withinMs(settlement, this.spec.graceMs)
+        // Termination keeps the graceMs bound (the caller asked to stop);
+        // natural exits drain within a budget floored for slow command
+        // completion transports (self-hosted envd) instead of the grace.
+        const drained = await withinMs(
+          settlement,
+          this.terminationSignal === null ? naturalDrainBudgetMs(this.spec.graceMs) : this.spec.graceMs,
+        )
         if (drained !== undefined) return this.commandOutcome(drained, exitCode)
         this.outputDrainExpired = true
         this.stdoutReader?.invalidateSpill()

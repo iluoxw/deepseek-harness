@@ -78,7 +78,10 @@
 | SDK 世代 | 必须 v2 Connect 世代（`e2b ^2.39.0`），envd 监听 49983；0.16.x beta 是废的 |
 | 模板别名 | `Sandbox.create` 只认 ID，别名 404 |
 | 缺 `E2B_DOMAIN` | envd 流量路由到 e2b.app → 假报 `sandbox not found`，沙箱其实活着 |
-| 官方 `tool-fs-search` | spawn 宿主 `@vscode/ripgrep` 的绝对路径，进沙箱 ENOENT——后续在 adapter 层改写为沙箱内 `rg`，**不要**为此改 tool-fs-search |
+| 官方 `tool-fs-search` | spawn 宿主 `@vscode/ripgrep` 的绝对路径，进沙箱 ENOENT。adapter 已把 argv[0] 改写成沙箱内 `/usr/bin/rg`（只匹配 `@vscode`/`ripgrep` 打包路径），**不要**为此改 tool-fs-search |
+| 官方 owner TTL | create 是 `onTimeout:'kill'`、无 keep-alive。Web 闲置 > timeoutMs 后第一次 bash 报 `Sandbox is probably not running anymore`。`getSandbox()` 每次成功获取都会 `setTimeout(timeoutMs)` 续命；overlay 默认 30min |
+| GUI workspace vs e2b.cwd | overlay 钉远端 Linux 路径（默认 `/home/user/workspace`）。Web picker 仍会把宿主机绝对路径写进 `session.header.cwd`；adapter 已把 `/Users`/`C:\` 等 host-absolute cwd/path remap 到 `e2b.cwd`（`remapHostPathToSandbox`），**不要**为此改 Web picker |
+| 源码 3081 热更新 | `pnpm dsh`/`tsx apps/cli/src/bin.ts` 读的是源码，但 **已启动的进程不会加载后来的 diff**。改 owner/adapter 后必须杀 3081 再起，否则会继续打到旧沙箱/旧 TTL |
 | envd 事件延迟 | 自托管 envd（0.6.x Connect）把 background 命令的输出帧+完成事件延迟 ~0.6–0.9s 投递（帧是迟到不是丢失，与 settlement 同时到）；官方 adapter 以 `graceMs`（250–500ms）为排空窗会静默丢首批输出。已修：自然退出排空 = `max(graceMs, 3s)`，可用 `E2B_OUTPUT_DRAIN_BUDGET_MS` 调；慢集群先测 `packages/e2b/e2b` timing 再调 |
 | envd 把 `user` 写回 sudo 组 | 模板构建期 `gpasswd -d` 无效；已用剥 setuid 断提权，别重复尝试 |
 | 升级 rc tag 时 SQLite | rc.8 数据结构与 rc.7 不兼容；切 tag 前备份 `~/.dsh` |

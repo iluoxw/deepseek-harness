@@ -5,14 +5,15 @@
 
 ## 1. 分支模型
 
-- `cvte/selfhost-e2b` 基于官方 **release tag**（当前 `dsh-v0.1.0-rc.8`），**不追 main**。
+- `cvte/selfhost-e2b` 基于官方 **release tag**（当前 `dsh-v0.1.1-rc.2`，2026-08-21 自 `dsh-v0.1.0-rc.8` rebase 而来，零冲突），**不追 main**。
   官方 rc 之间差异巨大（rc.7→rc.8 之间 250+ commits），追 main 会被无关变更淹没。
 - 同步官方新 rc：
 
   ```sh
-  git fetch upstream --tags
-  git rebase --onto dsh-v0.1.0-rc.9 dsh-v0.1.0-rc.8 cvte/selfhost-e2b
+  git fetch upstream 'refs/tags/<新tag>:refs/tags/<新tag>' --no-tags
+  git rebase --onto <新tag> dsh-v0.1.1-rc.2 cvte/selfhost-e2b
   # 冲突只应出现在 packages/e2b/**；出现在别处 = 上游重构了，先停下来读上游 diff
+  # rebase 后必须 corepack pnpm install（上游 lockfile 会变）再跑单测
   ```
 
 - 永不 merge main 进本分支；只用 rebase 挪 tag 基线。

@@ -24,6 +24,7 @@ import {
   FileNotFoundError,
   FileType,
   quoteE2BShellArg,
+  remapHostPathToSandbox,
 } from '@deepseek-ai/dsh-e2b'
 import type { EntryInfo, Sandbox } from '@deepseek-ai/dsh-e2b'
 
@@ -176,7 +177,7 @@ export class E2BFileSystem extends FileSystem {
   override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
     assertNotAborted(opts?.signal, 'resolve')
     if (path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
-    const displayPath = posix.resolve(opts?.cwd ?? this.ctx.e2b.cwd, path)
+    const displayPath = remapHostPathToSandbox(this.ctx.e2b.cwd, path, opts?.cwd)
     try {
       const sandbox = await this.ctx.e2b.getSandbox()
       const targetKey = await this.canonicalPath(sandbox, displayPath, opts?.signal)
@@ -216,7 +217,7 @@ export class E2BFileSystem extends FileSystem {
   override async lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsPathInfo | undefined> {
     assertNotAborted(signal, 'lstat')
     if (path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
-    const displayPath = posix.resolve(opts?.cwd ?? this.ctx.e2b.cwd, path)
+    const displayPath = remapHostPathToSandbox(this.ctx.e2b.cwd, path, opts?.cwd)
     const entry = await this.probe(displayPath, displayPath, signal)
     if (entry === undefined) return undefined
     const type = entry.symlinkTarget !== undefined

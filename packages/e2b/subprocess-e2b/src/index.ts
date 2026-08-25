@@ -5,7 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { posix } from 'node:path'
+import { posix, win32 } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
@@ -16,7 +16,7 @@ import type {
   SubprocessTerminalHandle,
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
-import { e2bControlEnvs, quoteE2BShellArg } from '@deepseek-ai/dsh-e2b'
+import { e2bControlEnvs, quoteE2BShellArg, remapHostCwdToSandbox } from '@deepseek-ai/dsh-e2b'
 import { E2BSubprocessHandle } from './process.ts'
 import { asError, signalOpts } from './remote.ts'
 import { spawnE2BTerminal } from './terminal.ts'
@@ -46,6 +46,28 @@ function requireRepresentableGrace(graceMs: number): void {
   if (!Number.isFinite(graceMs) || graceMs <= 0 || graceMs > MAX_TIMER_DELAY_MS) {
     throw new Error(`subprocess graceMs must be a positive finite number no greater than ${MAX_TIMER_DELAY_MS}`)
   }
+}
+
+/**
+ * Host-packaged ripgrep (`@vscode/ripgrep`) is an absolute macOS/Windows path.
+ * Official `tool-fs-search` injects it as argv[0]; that path does not exist
+ * inside the sandbox. Rewrite only that packaged binary to the in-image `rg`.
+ */
+const SANDBOX_RG = '/usr/bin/rg'
+
+function isHostPackagedRipgrep(program: string): boolean {
+  const posixBase = posix.basename(program)
+  const winBase = win32.basename(program)
+  if (posixBase !== 'rg' && posixBase !== 'rg.exe' && winBase !== 'rg' && winBase !== 'rg.exe') {
+    return false
+  }
+  return program.includes('@vscode') || program.includes('ripgrep')
+}
+
+function rewriteHostRipgrepArgv(argv: readonly string[]): readonly string[] {
+  const program = argv[0]
+  if (program === undefined || !isHostPackagedRipgrep(program)) return argv
+  return [SANDBOX_RG, ...argv.slice(1)]
 }
 
 /** E2B command manager registered as `ctx.subprocess`. */
@@ -139,7 +161,8 @@ export class E2BSubprocessRuntime extends SubprocessRuntime {
   /** @inheritdoc */
   spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
     if (this.disposing) throw new Error('subprocess-e2b: service is disposing')
-    const program = spec.argv[0]
+    const argv = rewriteHostRipgrepArgv(spec.argv)
+    const program = argv[0]
     if (program === undefined || program.length === 0) {
       throw new Error('invalid argv: expected a non-empty program name at argv[0]')
     }
@@ -147,8 +170,10 @@ export class E2BSubprocessRuntime extends SubprocessRuntime {
     if (spec.signal?.aborted === true) {
       throw new Error(`aborted before spawn: ${String(spec.signal.reason)}`)
     }
+    const cwd = remapHostCwdToSandbox(this.ctx.e2b.cwd, spec.cwd)
+    const rewritten = argv === spec.argv && cwd === spec.cwd ? spec : { ...spec, argv, cwd }
     const stateDir = posix.join(this.ctx.e2b.runtimeRoot, 'processes', randomUUID())
-    const handle = new E2BSubprocessHandle(this.ctx.e2b, spec, stateDir, this.pollMs)
+    const handle = new E2BSubprocessHandle(this.ctx.e2b, rewritten, stateDir, this.pollMs)
     this.live.add(handle)
     const release = async (): Promise<void> => {
       await handle.waitForExit()
@@ -163,7 +188,8 @@ export class E2BSubprocessRuntime extends SubprocessRuntime {
   /** @inheritdoc */
   async spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
     if (this.disposing) throw new Error('subprocess-e2b: service is disposing')
-    const program = spec.argv[0]
+    const argv = rewriteHostRipgrepArgv(spec.argv)
+    const program = argv[0]
     if (program === undefined || program.length === 0) {
       throw new Error('subprocess-e2b: terminal argv must contain a program')
     }
@@ -179,7 +205,7 @@ export class E2BSubprocessRuntime extends SubprocessRuntime {
     try {
       const terminal = await spawnE2BTerminal(
         this.ctx.e2b,
-        { ...spec, signal: setupSignal },
+        { ...spec, argv, cwd: remapHostCwdToSandbox(this.ctx.e2b.cwd, spec.cwd), signal: setupSignal },
         stateDir,
         this.pollMs,
       )

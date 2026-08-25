@@ -349,6 +349,21 @@ describe('E2BFileSystem identity, metadata, and reads', () => {
     expect(listed.some(entry => entry.name === 'nested.txt')).toBe(false)
   })
 
+  it('rewrites a host-absolute GUI cwd onto the sandbox workspace', async () => {
+    const remote = new FakeRemote()
+    remote.file('/workspace/src/a.ts', 'export {}\n')
+    const { fs } = await setup(remote)
+    const host = '/Users/me/Documents/dsh-01'
+    await expect(fs.resolve('src/a.ts', { cwd: host })).resolves.toEqual({
+      targetKey: '/workspace/src/a.ts',
+      displayPath: '/workspace/src/a.ts',
+    })
+    await expect(fs.resolve(`${host}/src/a.ts`, { cwd: host })).resolves.toEqual({
+      targetKey: '/workspace/src/a.ts',
+      displayPath: '/workspace/src/a.ts',
+    })
+  })
+
   it('projects canonical process paths, file URLs, and containment', async () => {
     const remote = new FakeRemote()
     remote.dir('/workspace/nested')

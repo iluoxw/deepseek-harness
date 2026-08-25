@@ -39,6 +39,54 @@ export function e2bControlEnvs(
   return { ...overrides, HOME: `/.dsh-e2b-control-${randomUUID()}` }
 }
 
+/**
+ * Map a host (or mixed) path onto the sandbox cwd.
+ *
+ * Web sessions carry `session.header.cwd` from the GUI picker — typically a
+ * macOS/Windows absolute path. Official fs/bash consumers pass that through
+ * as `opts.cwd` / `spec.cwd`. posix.resolve keeps a host-absolute first
+ * argument, so the model then reads `/Users/...` inside Linux.
+ */
+export function remapHostCwdToSandbox(sandboxCwd: string, cwd: string): string {
+  const posixCwd = toPosixPath(cwd)
+  if (isHostAbsolute(posixCwd)) return sandboxCwd
+  return posix.isAbsolute(posixCwd) ? posixCwd : posix.resolve(sandboxCwd, posixCwd)
+}
+
+export function remapHostPathToSandbox(sandboxCwd: string, path: string, cwd?: string): string {
+  const posixPath = toPosixPath(path)
+  const originalCwd = cwd !== undefined && cwd.length > 0 ? toPosixPath(cwd) : sandboxCwd
+  if (isHostAbsolute(posixPath)) {
+    if (isHostAbsolute(originalCwd)) {
+      const relative = posix.relative(originalCwd, posixPath)
+      if (relative === '') return sandboxCwd
+      if (relative !== '..' && !relative.startsWith('../') && !posix.isAbsolute(relative)) {
+        return posix.resolve(sandboxCwd, relative)
+      }
+    }
+    return posix.resolve(sandboxCwd, posix.basename(posixPath))
+  }
+  return posix.resolve(remapHostCwdToSandbox(sandboxCwd, originalCwd), posixPath)
+}
+
+export function isHostAbsolute(path: string): boolean {
+  const posixPath = toPosixPath(path)
+  if (/^[A-Za-z]:\//.test(posixPath) || posixPath.startsWith('//')) return true
+  return (
+    posixPath === '/Users' || posixPath.startsWith('/Users/')
+    || posixPath === '/Volumes' || posixPath.startsWith('/Volumes/')
+    || posixPath === '/private' || posixPath.startsWith('/private/')
+    || posixPath === '/Applications' || posixPath.startsWith('/Applications/')
+    || posixPath === '/System' || posixPath.startsWith('/System/')
+    || posixPath === '/Library' || posixPath.startsWith('/Library/')
+    || posixPath === '/opt/homebrew' || posixPath.startsWith('/opt/homebrew/')
+  )
+}
+
+function toPosixPath(path: string): string {
+  return path.replaceAll('\\', '/')
+}
+
 /** Configuration for the shared E2B sandbox owner. */
 export interface Config {
   /** API key; omission reads `E2B_API_KEY`. It is never forwarded into the sandbox. */
@@ -148,6 +196,9 @@ export class E2BRuntime extends Service {
 
   /**
    * Return the shared live SDK handle.
+   * Each successful acquisition also resets the sandbox TTL to `timeoutMs`
+   * (official create is kill-on-timeout with no keep-alive; an idle Web GUI
+   * otherwise dies before the first tool call).
    * @returns the created sandbox after the configured cwd exists.
    * @throws when E2B rejects creation or the service is disposing.
    */
@@ -156,6 +207,8 @@ export class E2BRuntime extends Service {
     const sandbox = await this.ready
     // Disposal can race the awaited sandbox readiness despite the synchronous precheck.
     // oxlint-disable-next-line typescript/no-unnecessary-condition -- Awaiting readiness yields to disposal.
+    if (this.disposed) throw new Error('E2B sandbox service is disposing')
+    await sandbox.setTimeout(this.config.timeoutMs)
     if (this.disposed) throw new Error('E2B sandbox service is disposing')
     return sandbox
   }

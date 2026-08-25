@@ -7,6 +7,8 @@ import E2BRuntime, {
   FileType,
   SandboxNotFoundError,
   quoteE2BShellArg,
+  remapHostCwdToSandbox,
+  remapHostPathToSandbox,
 } from '@deepseek-ai/dsh-e2b'
 import * as E2BInvariant from '../src/invariant.ts'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
@@ -33,6 +35,7 @@ interface SandboxFixture {
   getInfo: ReturnType<typeof vi.fn>
   run: Mock<RunCommand>
   kill: ReturnType<typeof vi.fn>
+  setTimeout: ReturnType<typeof vi.fn>
 }
 
 type RunCommand = (
@@ -45,13 +48,15 @@ function fakeSandbox(id = 'sandbox-1'): SandboxFixture {
   const getInfo = vi.fn().mockResolvedValue({ type: FileType.DIR })
   const run = vi.fn<RunCommand>().mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' })
   const kill = vi.fn().mockResolvedValue(undefined)
+  const setTimeout = vi.fn().mockResolvedValue(undefined)
   const sandbox = {
     sandboxId: id,
     files: { makeDir, getInfo },
     commands: { run },
     kill,
+    setTimeout,
   } as unknown as SandboxType
-  return { sandbox, makeDir, getInfo, run, kill }
+  return { sandbox, makeDir, getInfo, run, kill, setTimeout }
 }
 
 /** Minimal valid self-hosted connection block shared by the lifecycle tests. */
@@ -105,9 +110,28 @@ describe('E2BRuntime', () => {
       { envs: { HOME: runOptions?.envs?.HOME } },
     )
 
+    expect(fixture.setTimeout).toHaveBeenCalledWith(300_000)
     await fiber.dispose()
     expect(fixture.kill).toHaveBeenCalledOnce()
     await expect(service.getSandbox()).rejects.toThrow(/disposing/)
+  })
+
+  it('resets the sandbox TTL on every successful getSandbox', async () => {
+    const fixture = fakeSandbox()
+    sdk.create.mockResolvedValue(fixture.sandbox)
+    const ctx = new Context()
+    const fiber = await ctx.plugin(E2BRuntime, { ...SELFHOST, timeoutMs: 1_800_000 })
+    const service = ctx.e2b
+
+    await expect(service.getSandbox()).resolves.toBe(fixture.sandbox)
+    await expect(service.getSandbox()).resolves.toBe(fixture.sandbox)
+    expect(fixture.setTimeout).toHaveBeenNthCalledWith(1, 1_800_000)
+    expect(fixture.setTimeout).toHaveBeenNthCalledWith(2, 1_800_000)
+    expect(fixture.setTimeout).toHaveBeenCalledTimes(2)
+
+    await fiber.dispose()
+    await expect(service.getSandbox()).rejects.toThrow(/disposing/)
+    expect(fixture.setTimeout).toHaveBeenCalledTimes(2)
   })
 
   it('rejects handle acquisition when disposal starts during setup', async () => {
@@ -257,6 +281,21 @@ describe('E2BRuntime', () => {
 describe('E2B helpers and invariant companion', () => {
   it('quotes opaque shell arguments without interpolation', () => {
     expect(quoteE2BShellArg("a'b $HOME")).toBe("'a'\"'\"'b $HOME'")
+  })
+
+  it('rewrites host-absolute GUI cwd paths onto the sandbox cwd', () => {
+    const sandbox = '/home/user/workspace'
+    const host = '/Users/me/Documents/DSH-WorkSpace'
+    expect(remapHostCwdToSandbox(sandbox, host)).toBe(sandbox)
+    expect(remapHostPathToSandbox(sandbox, 'README.md')).toBe('/home/user/workspace/README.md')
+    expect(remapHostPathToSandbox(sandbox, 'src/a.ts', host)).toBe('/home/user/workspace/src/a.ts')
+    expect(remapHostPathToSandbox(sandbox, `${host}/src/a.ts`, host)).toBe('/home/user/workspace/src/a.ts')
+    expect(remapHostPathToSandbox(sandbox, host, host)).toBe(sandbox)
+    expect(remapHostPathToSandbox(sandbox, `${host}/README.md`)).toBe('/home/user/workspace/README.md')
+    expect(remapHostPathToSandbox(sandbox, 'C:\\Users\\me\\proj\\a.ts')).toBe('/home/user/workspace/a.ts')
+    expect(remapHostPathToSandbox(sandbox, '/home/user/workspace/src/a.ts')).toBe('/home/user/workspace/src/a.ts')
+    expect(remapHostPathToSandbox(sandbox, 'a.ts', sandbox)).toBe('/home/user/workspace/a.ts')
+    expect(remapHostPathToSandbox(sandbox, '/tmp/scratch.txt')).toBe('/tmp/scratch.txt')
   })
 
   it('registers the package-owned empty invariant installer', async () => {

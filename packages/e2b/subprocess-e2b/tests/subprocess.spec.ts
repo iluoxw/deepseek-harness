@@ -1790,6 +1790,35 @@ describe('E2BSubprocessRuntime', () => {
     expect(() => ctx.subprocess.spawn(spec({ signal: AbortSignal.abort('stop') }))).toThrow(/aborted before spawn/)
   })
 
+  it('rewrites a host-packaged @vscode/ripgrep argv to the in-sandbox rg', async () => {
+    const fake = new FakeSandbox()
+    const { ctx } = await service(fake)
+    const hostRg = '/Users/me/node_modules/@vscode/ripgrep/bin/rg'
+    ctx.subprocess.spawn(spec({ argv: [hostRg, '--no-config', '--json', '--regexp=e2b'] }))
+    await vi.waitFor(() => {
+      expect(fake.commandsSeen.some(command => command.includes("'/usr/bin/rg'"))).toBe(true)
+    })
+    expect(fake.commandsSeen.join('\n')).not.toContain('@vscode/ripgrep')
+  })
+
+  it('rewrites a host-absolute GUI cwd onto the sandbox workspace', async () => {
+    const fake = new FakeSandbox()
+    const { ctx } = await service(fake)
+    ctx.subprocess.spawn(spec({ cwd: '/Users/me/Documents/dsh-01', argv: ['bash', '-c', 'pwd'] }))
+    await vi.waitFor(() => { expect(fake.startOptions).toBeDefined() })
+    expect(fake.startOptions?.cwd).toBe('/workspace')
+  })
+
+  it('leaves ordinary argv[0] programs untouched', async () => {
+    const fake = new FakeSandbox()
+    const { ctx } = await service(fake)
+    ctx.subprocess.spawn(spec({ argv: ['bash', '-c', 'printf ok'] }))
+    await vi.waitFor(() => {
+      expect(fake.commandsSeen.some(command => command.includes("'bash'"))).toBe(true)
+    })
+    expect(fake.commandsSeen.join('\n')).not.toContain("'/usr/bin/rg'")
+  })
+
   it('registers the package-owned empty invariant installer', async () => {
     const ctx = new Context()
     await ctx.plugin(InvariantRegistry, { enabled: true })
